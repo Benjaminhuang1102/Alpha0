@@ -191,7 +191,7 @@ class MarketEncoder(nn.Module):
         x = x.permute(0, 2, 1, 3)          # (B, N, T, d_model)
         x = x.reshape(B * N, T, self.d_model)
         x = self.temporal_pos_enc(x)
-        x = self.temporal_transformer(x, mask=self.causal_mask, is_causal=True)
+        x = self.temporal_transformer(x, mask=self.causal_mask)
         # Take the final timestep (most recent)
         x = x[:, -1, :]                     # (B*N, d_model)
         x = x.reshape(B, N, self.d_model)  # (B, N, d_model)
