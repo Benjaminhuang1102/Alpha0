@@ -275,6 +275,10 @@ class SACTrainer:
         self.buffer    = ReplayBuffer(self._sc.replay_capacity)
         self.augmenter = ObservationAugmenter(obs_noise_std=self._sc.obs_noise_std)
 
+        # Mixed precision (uses Tensor Cores on T4/A100/V100)
+        self._use_amp = (self.device.type == "cuda")
+        self._scaler  = torch.amp.GradScaler("cuda", enabled=self._use_amp)
+
         # Training state
         self.total_steps   = 0
         self.total_updates = 0
@@ -534,11 +538,11 @@ class SACTrainer:
         obs, portfolio, action, reward, next_obs, next_port, done = \
             _batch_to_tensors(batch, self.device)
 
+        autocast_ctx = torch.amp.autocast("cuda", enabled=self._use_amp)
+
         # ── Critic update ──────────────────────────────────────────────
-        with torch.no_grad():
-            # Sample next action from current policy
+        with torch.no_grad(), autocast_ctx:
             next_action, next_log_prob = self.policy.act(next_obs, next_port)
-            # Target Q
             q1_tgt, q2_tgt = self.policy.q_values(
                 next_obs, next_port, next_action, use_targets=True
             )
@@ -546,11 +550,13 @@ class SACTrainer:
             y = reward + self._sc.gamma * (1.0 - done) * \
                 (min_q_tgt - self.alpha * next_log_prob.unsqueeze(1))
 
-        q1, q2 = self.policy.q_values(obs, portfolio, action)
-        critic_loss = F.mse_loss(q1, y) + F.mse_loss(q2, y)
+        with autocast_ctx:
+            q1, q2 = self.policy.q_values(obs, portfolio, action)
+            critic_loss = F.mse_loss(q1, y) + F.mse_loss(q2, y)
 
         self.critic_opt.zero_grad()
-        critic_loss.backward()
+        self._scaler.scale(critic_loss).backward()
+        self._scaler.unscale_(self.critic_opt)
         nn.utils.clip_grad_norm_(
             list(self.policy.critic1_encoder.parameters()) +
             list(self.policy.critic1.parameters()) +
@@ -558,22 +564,26 @@ class SACTrainer:
             list(self.policy.critic2.parameters()),
             self._sc.max_grad_norm,
         )
-        self.critic_opt.step()
+        self._scaler.step(self.critic_opt)
+        self._scaler.update()
 
         # ── Actor update ───────────────────────────────────────────────
-        action_new, log_prob = self.policy.act(obs, portfolio)
-        q1_new, q2_new = self.policy.q_values(obs, portfolio, action_new)
-        min_q_new = torch.min(q1_new, q2_new)
-        actor_loss = (self.alpha * log_prob.unsqueeze(1) - min_q_new).mean()
+        with autocast_ctx:
+            action_new, log_prob = self.policy.act(obs, portfolio)
+            q1_new, q2_new = self.policy.q_values(obs, portfolio, action_new)
+            min_q_new = torch.min(q1_new, q2_new)
+            actor_loss = (self.alpha * log_prob.unsqueeze(1) - min_q_new).mean()
 
         self.actor_opt.zero_grad()
-        actor_loss.backward()
+        self._scaler.scale(actor_loss).backward()
+        self._scaler.unscale_(self.actor_opt)
         nn.utils.clip_grad_norm_(
             list(self.policy.actor_encoder.parameters()) +
             list(self.policy.actor.parameters()),
             self._sc.max_grad_norm,
         )
-        self.actor_opt.step()
+        self._scaler.step(self.actor_opt)
+        self._scaler.update()
 
         # ── Auto-alpha update ─────────────────────────────────────────
         if self._sc.auto_alpha:
