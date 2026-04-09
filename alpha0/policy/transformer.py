@@ -129,7 +129,7 @@ class MarketEncoder(nn.Module):
             dim_feedforward=d_ff,
             dropout=dropout,
             batch_first=True,
-            norm_first=True,   # pre-LN for stability
+            norm_first=False,  # post-LN enables PyTorch fast path (NestedTensor)
         )
         self.temporal_transformer = nn.TransformerEncoder(
             temporal_layer, num_layers=n_temporal_layers
@@ -147,7 +147,7 @@ class MarketEncoder(nn.Module):
             dim_feedforward=d_ff,
             dropout=dropout,
             batch_first=True,
-            norm_first=True,
+            norm_first=False,  # post-LN enables PyTorch fast path
         )
         self.cross_transformer = nn.TransformerEncoder(
             cross_layer, num_layers=n_cross_layers
@@ -191,7 +191,7 @@ class MarketEncoder(nn.Module):
         x = x.permute(0, 2, 1, 3)          # (B, N, T, d_model)
         x = x.reshape(B * N, T, self.d_model)
         x = self.temporal_pos_enc(x)
-        x = self.temporal_transformer(x, mask=self.causal_mask, is_causal=True)
+        x = self.temporal_transformer(x, is_causal=True)
         # Take the final timestep (most recent)
         x = x[:, -1, :]                     # (B*N, d_model)
         x = x.reshape(B, N, self.d_model)  # (B, N, d_model)
