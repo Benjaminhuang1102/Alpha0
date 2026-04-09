@@ -1,0 +1,191 @@
+# ── Data ───────────────────────────────────────────────────────────────────
+data:
+  raw_dir:        "data/raw"
+  processed_dir:  "data/processed"
+  cache_dir:      "data/cache"
+  universe_dir:   "data/universe"
+  start_date:     "2005-01-01"
+  end_date:       "2024-12-31"
+  lookback_window: 20          # T in (T, N, F) tensor  [CPU: 20; GPU: 60]
+  train_end:      "2019-12-31"
+  val_end:        "2021-12-31"
+  # test is everything after val_end
+
+  fred_series:
+    - {id: "VIXCLS",   alias: "vix"}
+    - {id: "DGS10",    alias: "dgs10"}
+    - {id: "DGS2",     alias: "dgs2"}
+    - {id: "DTWEXBGS", alias: "dxy"}   # Nominal broad US dollar index (free)
+
+  yfinance_macro:
+    - {ticker: "GC=F", alias: "gold_return"}
+    - {ticker: "CL=F", alias: "oil_return"}
+
+  # Per-asset features (defines F[0..6], order matters)
+  asset_features:
+    - "log_return"       # F[0]  log(close_t / close_{t-1})
+    - "vol_21d"          # F[1]  21-day rolling std of log_return
+    - "dollar_volume"    # F[2]  log(close * volume + 1)
+    - "high_low_range"   # F[3]  log(high / low)
+    - "close_to_open"    # F[4]  log(close / open)
+    - "vol_5d"           # F[5]  5-day rolling std of log_return
+    - "vol_63d"          # F[6]  63-day rolling std of log_return
+
+  # Cross-asset/macro features (defines F[7..13], broadcast to all assets)
+  macro_features:
+    - "vix"              # F[7]  VIX level
+    - "dgs10"            # F[8]  10Y Treasury yield
+    - "dgs2"             # F[9]  2Y Treasury yield
+    - "yield_spread"     # F[10] 10Y - 2Y spread (computed)
+    - "dxy"              # F[11] US Dollar Index level
+    - "gold_return"      # F[12] log return of gold
+    - "oil_return"       # F[13] log return of crude oil
+
+  normalization:
+    method: "rolling_zscore"
+    window: 252            # rolling lookback for mean/std
+    clip:   5.0            # clip to ±5σ after normalization
+
+  # yfinance fetch settings
+  fetch_chunk_size:      50   # tickers per yfinance batch call
+  fetch_chunk_delay:     2.0  # seconds between batch chunks
+  fetch_max_retries:     3    # retries on network failure
+
+# ── Universe ───────────────────────────────────────────────────────────────
+universe:
+  index:                 "sp500"
+  min_history_days:      504        # 2 years of trading days
+  min_avg_dollar_volume: 1_000_000  # $1M/day minimum
+  max_assets:            30         # top N by avg dollar volume  [CPU: 30; GPU: 100]
+
+# ── Environment ────────────────────────────────────────────────────────────
+env:
+  episode_length:          252       # trading days per episode
+  n_assets:                30        # must match universe.max_assets  [CPU: 30; GPU: 100]
+  initial_portfolio_value: 1_000_000.0
+
+  # Position constraints
+  max_single_weight:   0.10  # max 10% per stock
+  min_cash_weight:     0.05  # min 5% cash at all times
+  max_gross_exposure:  1.00  # long-only, no leverage
+
+  # Reward hyperparameters
+  reward:
+    daily_return_scale:  1.0
+    risk_penalty_scale:  0.1   # multiplied by annualized vol
+    risk_penalty_window: 21    # rolling window for realized vol
+
+# ── Transaction Costs ──────────────────────────────────────────────────────
+costs:
+  commission_bps: 5   # 5 basis points commission
+  slippage_bps:   5   # 5 basis points estimated slippage
+  # Total round-trip: 10bps per unit of one-way turnover
+
+# ── Risk Manager (Phase 3) ─────────────────────────────────────────────────
+risk:
+  max_drawdown_soft:     0.15   # go to 50% cash
+  max_drawdown_hard:     0.20   # go to 100% cash
+  cooloff_days:          5      # days before re-entering after circuit breaker
+  max_sector_weight:     0.30   # max 30% in any single GICS sector
+  min_positions:         10     # at least 10 active positions
+  max_daily_turnover:    0.30   # max 30% portfolio turnover per day
+  spy_correlation_alert: 0.95   # flag if portfolio correlation to SPY exceeds this
+
+# ── Position Sizing (Phase 3) ──────────────────────────────────────────────
+position_sizing:
+  method:            "vol_target"   # "uniform" | "vol_target" | "kelly"
+  target_annual_vol: 0.10           # 10% annualised portfolio volatility target
+  vol_lookback:      21             # lookback window for realised vol (days)
+  max_leverage:      1.0            # cap on total equity fraction
+  min_cash:          0.05           # minimum cash after scaling
+  kelly_fraction:    0.50           # fractional Kelly (if method="kelly")
+
+# ── Regime Detection (Phase 3) ─────────────────────────────────────────────
+regime:
+  trend_lookback:      200    # days for trend moving average
+  vol_lookback:        21     # days for realised vol
+  vol_high_multiplier: 1.5    # vol threshold relative to long-run median
+  long_run_vol_window: 252    # baseline vol window
+  min_history:         60     # min days before classification
+
+# ── Ensemble (Phase 4) ────────────────────────────────────────────────────
+ensemble:
+  n_agents:      5             # number of independently trained agents
+  seeds:         [0, 1, 2, 3, 4]
+  artifacts_dir: "artifacts/ensemble"
+
+# ── Walk-Forward Validation ────────────────────────────────────────────────
+walk_forward:
+  folds:
+    - {train_end: "2016-12-31", val_end: "2017-12-31", test_end: "2018-12-31"}
+    - {train_end: "2017-12-31", val_end: "2018-12-31", test_end: "2019-12-31"}
+    - {train_end: "2018-12-31", val_end: "2019-12-31", test_end: "2020-12-31"}
+    - {train_end: "2019-12-31", val_end: "2020-12-31", test_end: "2021-12-31"}
+    - {train_end: "2020-12-31", val_end: "2021-12-31", test_end: "2022-12-31"}
+    - {train_end: "2021-12-31", val_end: "2022-12-31", test_end: "2023-12-31"}
+    - {train_end: "2022-12-31", val_end: "2023-12-31", test_end: "2024-12-31"}
+  train_start: "2010-01-01"
+
+# ── Training (Phase 2) ─────────────────────────────────────────────────────
+training:
+  algorithm:         "SAC"
+  n_ensemble:        5
+  batch_size:        128         # [CPU: 128; GPU: 256]
+  replay_buffer_size: 50_000    # [CPU: 50k; GPU: 100k]
+  learning_rate:     0.0003
+  gamma:             0.99
+  tau:               0.005       # soft target update
+  alpha:             0.2         # SAC entropy coefficient
+  dropout:           0.1         # [CPU: 0.1; GPU: 0.2]
+  weight_decay:      0.0001
+  obs_noise_std:     0.01        # Gaussian noise added to inputs during training
+  max_grad_norm:     1.0
+  n_steps_per_update: 1
+  warmup_steps:      500         # [CPU: 500; GPU: 1000]
+
+  # Model architecture  [CPU-sized; scale up for GPU]
+  d_model:           64          # embedding dim  [CPU: 64; GPU: 128]
+  n_temporal_layers: 1           # temporal attention layers  [CPU: 1; GPU: 3]
+  n_cross_layers:    1           # cross-asset attention layers
+  n_heads:           4           # attention heads
+  d_ff:              128         # feedforward dim  [CPU: 128; GPU: 256]
+  actor_hidden:      128         # actor MLP hidden dim  [CPU: 128; GPU: 256]
+  critic_hidden:     128         # critic MLP hidden dim  [CPU: 128; GPU: 256]
+
+# ── Evaluation ─────────────────────────────────────────────────────────────
+eval:
+  risk_free_rate:        0.04    # annualized
+  trading_days_per_year: 252
+  benchmark_ticker:      "SPY"
+  rolling_window:        63      # rolling window for dashboard metrics
+
+  var_confidence:  0.95           # confidence level for VaR / CVaR
+
+  metrics:
+    - "total_return"
+    - "annualized_return"
+    - "annualized_vol"
+    - "sharpe_ratio"
+    - "sortino_ratio"
+    - "max_drawdown"
+    - "calmar_ratio"
+    - "beta"
+    - "alpha"
+    - "turnover"
+    - "hit_rate"
+
+  backtest:
+    initial_capital: 1_000_000.0
+    rebalance_freq:  "daily"
+
+# ── Logging / Artifacts ────────────────────────────────────────────────────
+artifacts:
+  base_dir:        "artifacts"
+  figures_dir:     "artifacts/figures"
+  reports_dir:     "artifacts/reports"
+  models_dir:      "artifacts/models"
+  experiments_dir: "artifacts/experiments"
+
+logging:
+  level:            "INFO"
+  tensorboard_dir:  "artifacts/experiments"

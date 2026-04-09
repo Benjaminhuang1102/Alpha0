@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "alpha0"
+version = "0.1.0"
+description = "AlphaZero-inspired RL system for equity portfolio allocation"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.0",
+    "gymnasium>=0.29",
+    "numpy",
+    "pandas",
+    "yfinance>=0.2",
+    "fredapi",
+    "pyarrow>=14.0",
+    "matplotlib",
+    "seaborn",
+    "pyyaml",
+    "tensorboard",
+    "requests",
+    "tqdm",
+    "scipy",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov",
+    "pytest-mock",
+]
+
+[project.scripts]
+alpha0-fetch          = "scripts.fetch_data:main"
+alpha0-train          = "scripts.train:main"
+alpha0-train-ensemble = "scripts.train_ensemble:main"
+alpha0-paper-trade    = "scripts.paper_trade:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["alpha0*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--tb=short -q"
